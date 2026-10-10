@@ -177,7 +177,11 @@ public final class ForkedSbtIncrementalCompilerMain {
 
     SbtIncrementalCompiler incrementalCompiler =
         SbtIncrementalCompilers.makeInProcess(
-            parsedArgs.cacheFile, parsedArgs.compileOrder, compilers, sbtLogger);
+            parsedArgs.cacheFile,
+            parsedArgs.compileOrder,
+            compilers,
+            Collections.emptyMap(),
+            sbtLogger);
 
     incrementalCompiler.compile(
         parsedArgs.classpathElements,
