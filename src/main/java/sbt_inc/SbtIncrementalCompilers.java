@@ -61,7 +61,8 @@ public final class SbtIncrementalCompilers {
       String[] jvmArgs,
       File javaExec,
       List<File> forkBootClasspath,
-      boolean reuseCompilerBridge)
+      boolean reuseCompilerBridge,
+      Map<File, File> upstreamAnalysisFiles)
       throws Exception {
 
     CompilerBridge bridge =
@@ -85,7 +86,11 @@ public final class SbtIncrementalCompilers {
 
     if (jvmArgs == null || jvmArgs.length == 0) {
       return makeInProcess(
-          cacheFile, compileOrder, bridge.compilers, new MavenLoggerSbtAdapter(mavenLogger));
+          cacheFile,
+          compileOrder,
+          bridge.compilers,
+          upstreamAnalysisFiles,
+          new MavenLoggerSbtAdapter(mavenLogger));
     } else {
       return makeForkedProcess(
           javaHome,
@@ -180,10 +185,14 @@ public final class SbtIncrementalCompilers {
   }
 
   static SbtIncrementalCompiler makeInProcess(
-      File cacheFile, CompileOrder compileOrder, Compilers compilers, Logger sbtLogger) {
+      File cacheFile,
+      CompileOrder compileOrder,
+      Compilers compilers,
+      Map<File, File> upstreamAnalysisFiles,
+      Logger sbtLogger) {
 
     AnalysisStore analysisStore = AnalysisStore.getCachedStore(FileAnalysisStore.binary(cacheFile));
-    Setup setup = makeSetup(cacheFile, sbtLogger);
+    Setup setup = makeSetup(cacheFile, upstreamAnalysisFiles, sbtLogger);
     IncrementalCompiler compiler = ZincUtil.defaultIncrementalCompiler();
 
     return new InProcessSbtIncrementalCompiler(
@@ -294,12 +303,71 @@ public final class SbtIncrementalCompilers {
         scalaInstance, ClasspathOptionsUtil.boot(), Option.apply(javaHome.toPath()), scalaCompiler);
   }
 
-  private static Setup makeSetup(File cacheFile, xsbti.Logger sbtLogger) {
+  /**
+   * Upstream analyses are read once per classpath entry for every module that depends on them, so
+   * keep the last one loaded per file and reuse it until the file changes.
+   */
+  private static final Map<File, LoadedAnalysis> UPSTREAM_ANALYSIS_CACHE =
+      new ConcurrentHashMap<>();
+
+  private static final class LoadedAnalysis {
+    final long lastModified;
+    final long length;
+    final Optional<CompileAnalysis> analysis;
+
+    LoadedAnalysis(long lastModified, long length, Optional<CompileAnalysis> analysis) {
+      this.lastModified = lastModified;
+      this.length = length;
+      this.analysis = analysis;
+    }
+
+    boolean isCurrent(File analysisStoreFile) {
+      return lastModified == analysisStoreFile.lastModified()
+          && length == analysisStoreFile.length();
+    }
+  }
+
+  private static Optional<CompileAnalysis> loadUpstreamAnalysis(File analysisStoreFile) {
+    LoadedAnalysis loaded = UPSTREAM_ANALYSIS_CACHE.get(analysisStoreFile);
+    if (loaded != null && loaded.isCurrent(analysisStoreFile)) {
+      return loaded.analysis;
+    }
+    long lastModified = analysisStoreFile.lastModified();
+    long length = analysisStoreFile.length();
+    Optional<CompileAnalysis> analysis =
+        FileAnalysisStore.binary(analysisStoreFile).get().map(AnalysisContents::getAnalysis);
+    UPSTREAM_ANALYSIS_CACHE.put(
+        analysisStoreFile, new LoadedAnalysis(lastModified, length, analysis));
+    return analysis;
+  }
+
+  /**
+   * Normalizes a classpath entry so reactor artifact files and classpath elements compare equal.
+   */
+  public static File canonicalEntry(File file) {
+    try {
+      return file.getCanonicalFile();
+    } catch (IOException e) {
+      return file.getAbsoluteFile();
+    }
+  }
+
+  private static Setup makeSetup(
+      File cacheFile, Map<File, File> upstreamAnalysisFiles, xsbti.Logger sbtLogger) {
     PerClasspathEntryLookup lookup =
         new PerClasspathEntryLookup() {
           @Override
           public Optional<CompileAnalysis> analysis(VirtualFile classpathEntry) {
             Path path = ((PathBasedFile) classpathEntry).toPath();
+
+            // A jar packaged by an upstream reactor module: without its analysis, zinc sees the
+            // rebuilt jar as a changed library and recompiles every source that uses it.
+            File reactorAnalysisFile = upstreamAnalysisFiles.get(canonicalEntry(path.toFile()));
+            if (reactorAnalysisFile != null) {
+              return reactorAnalysisFile.exists()
+                  ? loadUpstreamAnalysis(reactorAnalysisFile)
+                  : Optional.empty();
+            }
 
             String analysisStoreFileName = null;
             if (Files.isDirectory(path)) {
@@ -315,9 +383,7 @@ public final class SbtIncrementalCompilers {
               File analysisStoreFile =
                   path.getParent().resolve("analysis").resolve(analysisStoreFileName).toFile();
               if (analysisStoreFile.exists()) {
-                return AnalysisStore.getCachedStore(FileAnalysisStore.binary(analysisStoreFile))
-                    .get()
-                    .map(AnalysisContents::getAnalysis);
+                return loadUpstreamAnalysis(analysisStoreFile);
               }
             }
             return Optional.empty();

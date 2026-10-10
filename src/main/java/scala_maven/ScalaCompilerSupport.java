@@ -10,6 +10,7 @@ import java.util.stream.Collectors;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.project.MavenProject;
 import sbt_inc.SbtIncrementalCompiler;
 import sbt_inc.SbtIncrementalCompilers;
 import scala_maven_dependency.Context;
@@ -337,7 +338,8 @@ public abstract class ScalaCompilerSupport extends ScalaSourceMojoSupport {
               jvmArgs,
               JavaLocator.findExecutableFromToolchain(getToolchain()),
               pluginArtifacts.stream().map(Artifact::getFile).collect(Collectors.toList()),
-              reuseCompilerBridge);
+              reuseCompilerBridge,
+              reactorAnalysisFiles());
     }
 
     try {
@@ -352,5 +354,35 @@ public abstract class ScalaCompilerSupport extends ScalaSourceMojoSupport {
     }
 
     return 1;
+  }
+
+  /**
+   * Maps the jars already packaged by other modules of this reactor to the incremental analysis
+   * they were compiled with (the default {@code analysisCacheFile} locations), so that zinc can
+   * compare their APIs instead of treating every rebuilt jar as a changed library. Only used for
+   * in-process compilation, where loaded analyses are shared across modules.
+   */
+  private Map<File, File> reactorAnalysisFiles() {
+    Map<File, File> analysisFiles = new HashMap<>();
+    if (session == null || session.getProjects() == null) {
+      return analysisFiles;
+    }
+    for (MavenProject reactorProject : session.getProjects()) {
+      File analysisDir = new File(reactorProject.getBuild().getDirectory(), "analysis");
+      putIfPackaged(analysisFiles, reactorProject.getArtifact(), new File(analysisDir, "compile"));
+      for (Artifact attached : reactorProject.getAttachedArtifacts()) {
+        if ("tests".equals(attached.getClassifier())) {
+          putIfPackaged(analysisFiles, attached, new File(analysisDir, "test-compile"));
+        }
+      }
+    }
+    return analysisFiles;
+  }
+
+  private static void putIfPackaged(
+      Map<File, File> analysisFiles, Artifact artifact, File analysisFile) {
+    if (artifact != null && artifact.getFile() != null && artifact.getFile().isFile()) {
+      analysisFiles.put(SbtIncrementalCompilers.canonicalEntry(artifact.getFile()), analysisFile);
+    }
   }
 }
