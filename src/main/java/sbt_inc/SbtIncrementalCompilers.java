@@ -62,7 +62,8 @@ public final class SbtIncrementalCompilers {
       File javaExec,
       List<File> forkBootClasspath,
       boolean reuseCompilerBridge,
-      Map<File, File> upstreamAnalysisFiles)
+      Map<File, File> upstreamAnalysisFiles,
+      AnalysisRelocation relocation)
       throws Exception {
 
     CompilerBridge bridge =
@@ -90,6 +91,7 @@ public final class SbtIncrementalCompilers {
           compileOrder,
           bridge.compilers,
           upstreamAnalysisFiles,
+          relocation,
           new MavenLoggerSbtAdapter(mavenLogger));
     } else {
       return makeForkedProcess(
@@ -189,14 +191,16 @@ public final class SbtIncrementalCompilers {
       CompileOrder compileOrder,
       Compilers compilers,
       Map<File, File> upstreamAnalysisFiles,
+      AnalysisRelocation relocation,
       Logger sbtLogger) {
 
-    AnalysisStore analysisStore = AnalysisStore.getCachedStore(FileAnalysisStore.binary(cacheFile));
-    Setup setup = makeSetup(cacheFile, upstreamAnalysisFiles, sbtLogger);
+    AnalysisStore analysisStore =
+        AnalysisStore.getCachedStore(FileAnalysisStore.binary(cacheFile, relocation.mappers()));
+    Setup setup = makeSetup(cacheFile, upstreamAnalysisFiles, relocation, sbtLogger);
     IncrementalCompiler compiler = ZincUtil.defaultIncrementalCompiler();
 
     return new InProcessSbtIncrementalCompiler(
-        compilers, analysisStore, setup, compiler, compileOrder, sbtLogger);
+        compilers, analysisStore, setup, compiler, compileOrder, relocation, sbtLogger);
   }
 
   private static SbtIncrementalCompiler makeForkedProcess(
@@ -327,7 +331,8 @@ public final class SbtIncrementalCompilers {
     }
   }
 
-  private static Optional<CompileAnalysis> loadUpstreamAnalysis(File analysisStoreFile) {
+  private static Optional<CompileAnalysis> loadUpstreamAnalysis(
+      File analysisStoreFile, AnalysisRelocation relocation) {
     LoadedAnalysis loaded = UPSTREAM_ANALYSIS_CACHE.get(analysisStoreFile);
     if (loaded != null && loaded.isCurrent(analysisStoreFile)) {
       return loaded.analysis;
@@ -335,7 +340,9 @@ public final class SbtIncrementalCompilers {
     long lastModified = analysisStoreFile.lastModified();
     long length = analysisStoreFile.length();
     Optional<CompileAnalysis> analysis =
-        FileAnalysisStore.binary(analysisStoreFile).get().map(AnalysisContents::getAnalysis);
+        FileAnalysisStore.binary(analysisStoreFile, relocation.mappers())
+            .get()
+            .map(AnalysisContents::getAnalysis);
     UPSTREAM_ANALYSIS_CACHE.put(
         analysisStoreFile, new LoadedAnalysis(lastModified, length, analysis));
     return analysis;
@@ -353,7 +360,10 @@ public final class SbtIncrementalCompilers {
   }
 
   private static Setup makeSetup(
-      File cacheFile, Map<File, File> upstreamAnalysisFiles, xsbti.Logger sbtLogger) {
+      File cacheFile,
+      Map<File, File> upstreamAnalysisFiles,
+      AnalysisRelocation relocation,
+      xsbti.Logger sbtLogger) {
     PerClasspathEntryLookup lookup =
         new PerClasspathEntryLookup() {
           @Override
@@ -365,7 +375,7 @@ public final class SbtIncrementalCompilers {
             File reactorAnalysisFile = upstreamAnalysisFiles.get(canonicalEntry(path.toFile()));
             if (reactorAnalysisFile != null) {
               return reactorAnalysisFile.exists()
-                  ? loadUpstreamAnalysis(reactorAnalysisFile)
+                  ? loadUpstreamAnalysis(reactorAnalysisFile, relocation)
                   : Optional.empty();
             }
 
@@ -383,7 +393,7 @@ public final class SbtIncrementalCompilers {
               File analysisStoreFile =
                   path.getParent().resolve("analysis").resolve(analysisStoreFileName).toFile();
               if (analysisStoreFile.exists()) {
-                return loadUpstreamAnalysis(analysisStoreFile);
+                return loadUpstreamAnalysis(analysisStoreFile, relocation);
               }
             }
             return Optional.empty();

@@ -181,6 +181,7 @@ public final class ForkedSbtIncrementalCompilerMain {
             parsedArgs.compileOrder,
             compilers,
             Collections.emptyMap(),
+            AnalysisRelocation.NONE,
             sbtLogger);
 
     incrementalCompiler.compile(

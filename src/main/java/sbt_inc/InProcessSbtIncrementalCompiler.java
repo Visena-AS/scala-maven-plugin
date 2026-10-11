@@ -18,6 +18,7 @@ public final class InProcessSbtIncrementalCompiler implements SbtIncrementalComp
 
   private final IncrementalCompiler compiler;
   private final CompileOrder compileOrder;
+  private final AnalysisRelocation relocation;
   private final Logger sbtLogger;
 
   public InProcessSbtIncrementalCompiler(
@@ -26,12 +27,14 @@ public final class InProcessSbtIncrementalCompiler implements SbtIncrementalComp
       Setup setup,
       IncrementalCompiler compiler,
       CompileOrder compileOrder,
+      AnalysisRelocation relocation,
       Logger sbtLogger) {
     this.compilers = compilers;
     this.analysisStore = analysisStore;
     this.setup = setup;
     this.compiler = compiler;
     this.compileOrder = compileOrder;
+    this.relocation = relocation;
     this.sbtLogger = sbtLogger;
   }
 
@@ -50,11 +53,9 @@ public final class InProcessSbtIncrementalCompiler implements SbtIncrementalComp
     CompileOptions options =
         CompileOptions.of(
             fullClasspathElements.stream()
-                .map(file -> new PlainVirtualFile(file.toPath()))
+                .map(this::toVirtualFile)
                 .toArray(VirtualFile[]::new), // classpath
-            sources.stream()
-                .map(file -> new PlainVirtualFile(file.toPath()))
-                .toArray(VirtualFile[]::new), // sources
+            sources.stream().map(this::toVirtualFile).toArray(VirtualFile[]::new), // sources
             classesDirectory.toPath(), //
             scalacOptions.toArray(new String[] {}), // scalacOptions
             javacOptions.toArray(new String[] {}), // javacOptions
@@ -62,7 +63,7 @@ public final class InProcessSbtIncrementalCompiler implements SbtIncrementalComp
             pos -> pos, // sourcePositionMappers
             compileOrder, // order
             Optional.empty(), // temporaryClassesDirectory
-            Optional.empty(), // _converter
+            relocation.converter(), // _converter
             Optional.empty(), // _stamper
             Optional.empty() // _earlyOutput
             );
@@ -83,5 +84,11 @@ public final class InProcessSbtIncrementalCompiler implements SbtIncrementalComp
     } else {
       return PreviousResult.of(Optional.empty(), Optional.empty());
     }
+  }
+
+  private VirtualFile toVirtualFile(File file) {
+    return relocation.converter().isPresent()
+        ? relocation.converter().get().toVirtualFile(file.toPath())
+        : new PlainVirtualFile(file.toPath());
   }
 }

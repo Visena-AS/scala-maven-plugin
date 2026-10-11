@@ -72,6 +72,14 @@ public abstract class ScalaCompilerSupport extends ScalaSourceMojoSupport {
   @Parameter(property = "reuseCompilerBridge", defaultValue = "true")
   private boolean reuseCompilerBridge;
 
+  /**
+   * Write the incremental analysis with paths relative to the reactor root and the local repository
+   * instead of absolute ones, so it stays valid when the build tree or the local repository moves,
+   * as when compiled state is restored from another machine.
+   */
+  @Parameter(property = "relocatableAnalysis", defaultValue = "false")
+  private boolean relocatableAnalysis;
+
   protected abstract File getOutputDir() throws Exception;
 
   protected abstract Set<File> getClasspathElements() throws Exception;
@@ -339,7 +347,8 @@ public abstract class ScalaCompilerSupport extends ScalaSourceMojoSupport {
               JavaLocator.findExecutableFromToolchain(getToolchain()),
               pluginArtifacts.stream().map(Artifact::getFile).collect(Collectors.toList()),
               reuseCompilerBridge,
-              reactorAnalysisFiles());
+              reactorAnalysisFiles(),
+              analysisRelocation());
     }
 
     try {
@@ -384,5 +393,23 @@ public abstract class ScalaCompilerSupport extends ScalaSourceMojoSupport {
     if (artifact != null && artifact.getFile() != null && artifact.getFile().isFile()) {
       analysisFiles.put(SbtIncrementalCompilers.canonicalEntry(artifact.getFile()), analysisFile);
     }
+  }
+
+  private sbt_inc.AnalysisRelocation analysisRelocation() {
+    if (!relocatableAnalysis) {
+      return sbt_inc.AnalysisRelocation.NONE;
+    }
+    Map<String, java.nio.file.Path> roots = new LinkedHashMap<>();
+    roots.put(
+        "BASE",
+        SbtIncrementalCompilers.canonicalEntry(session.getTopLevelProject().getBasedir()).toPath());
+    roots.put(
+        "M2",
+        SbtIncrementalCompilers.canonicalEntry(new File(session.getLocalRepository().getBasedir()))
+            .toPath());
+    roots.put(
+        "JAVA_HOME",
+        SbtIncrementalCompilers.canonicalEntry(new File(System.getProperty("java.home"))).toPath());
+    return sbt_inc.AnalysisRelocation.relativeTo(roots);
   }
 }
